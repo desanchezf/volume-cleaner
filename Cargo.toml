@@ -1,0 +1,10 @@
+[package]
+name = "volume-cleaner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.36.2" 
+egui = "0.36.2"
+walkdir = "2.5.0"
+sha2 = "0.11.0"
