@@ -19,7 +19,7 @@ pub fn check_files(files_vector: <Vec<PathBuff>>) -> <Vec<PathBuf>>{
 
 }
 
-fn calculate_hash(file_path: &str) -> str { 
+fn calculate_hash(file_path: &str) -> &str { 
     // Return a file hash
     
 }
