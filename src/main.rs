@@ -2,8 +2,6 @@ mod filesystem;
 mod gui;
 mod config;
 
-
-
-fn main() {
-    
+fn main() -> eframe::Result {
+    gui::run()
 }

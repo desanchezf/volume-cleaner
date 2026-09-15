@@ -7,6 +7,7 @@ A Rust + egui GUI application to scan storage volumes, preview media and documen
 ## Features
 
 - **Multi-platform support**: Runs on ARM (Apple Silicon), x64, x86, and x32 architectures across Windows, Linux, and macOS.
+- **Home-relative paths**: Listed paths replace the user home directory with `~` (`~/Documents/gifs/foto.jpg`). This is display-only; stored paths stay absolute. Home is taken from `HOME` on macOS/Linux and `USERPROFILE` on Windows. Separators are normalized to `/` in the `~` form so the same listing reads well on all three platforms.
 - **Recursive file scanning**: List all files recursively from selected directories or volumes.
 - **File type filtering**: Group and filter by extensions:
   - 🖼️ Images (jpg, jpeg, png, webp, gif, bmp, etc.)
@@ -15,7 +16,7 @@ A Rust + egui GUI application to scan storage volumes, preview media and documen
   - 🎵 Audio (mp3, flac, wav, aac, etc.)
 - **Custom extensions**: Users can specify additional custom file extensions to include in the scan (e.g., `.docx`, `.psd`, `.raw`).
 - **Unsupported format handling**: For file types without built-in preview support (e.g., `.docx`), the application offers a **"Reveal in Explorer/Finder"** option to open the file's location in the system file manager, allowing the user to open it with the default application.
-- **Duplicate detection**: Calculate file hashes (e.g., SHA-256) to identify duplicates. Only one copy of each unique hash is retained.
+- **Duplicate detection**: Calculate file hashes (e.g., SHA-256) to identify byte-identical copies. The **original** is the first occurrence WalkDir visits during the scan (depth-first, unsorted). The review GUI shows that flag (`is_duped`); the user marks keep or delete per file. Nothing is removed from disk until confirmation.
 - **Tinder-like review**: Navigate files sequentially and mark for deletion or retention using keyboard shortcuts (e.g., `Y`/`N`, arrow keys).
 - **Safe cleanup workflow**:
   - Copy retained files to a new output directory.
@@ -143,6 +144,20 @@ volume-cleaner/
     - Windows: Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
 - **Memory**: Minimum 512 MB RAM recommended for large file sets.
 - **Disk Space**: Sufficient space for output directory (at least equal to size of files to retain).
+
+### Home directory (`~`)
+
+The `~` prefix in the UI and CLI listings is a **display** convention, not a rewrite of `Entry.path`.
+
+| | macOS / Linux | Windows |
+|--|----------------|---------|
+| Home variable | `HOME` (`/Users/you`) | `USERPROFILE` (`C:\Users\you`) |
+| `~` on screen | yes | yes (`~/Documents/...`) |
+| `volume-cleaner ~/Documents image` | the shell expands `~` | **cmd.exe does not**; PowerShell and Git Bash do |
+
+Matching uses `Path::strip_prefix`, so Windows backslashes still count as home. On Windows the comparison is case-sensitive: if a path is `c:\...` and `USERPROFILE` is `C:\...`, the substitution may be skipped.
+
+When passing a directory on the command line, use an absolute path (or PowerShell/`~`) on Windows cmd.
 
 ## Installation
 

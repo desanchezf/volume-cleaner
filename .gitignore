@@ -27,3 +27,6 @@ LEARNING.md
 # Added by cargo
 
 /target
+
+# macOS
+.DS_Store
