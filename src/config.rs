@@ -5,8 +5,6 @@ pub struct Extensions {
     documents: Vec<String>,
     image: Vec<String>,
     video: Vec<String>,
-    // For custom extensions
-    custom: Vec<String>
 }
 
 impl Default for Extensions {
@@ -43,7 +41,18 @@ impl Default for Extensions {
                 "avi".to_string(),
                 "webm".to_string(),
             ],
-            custom: vec![],
+        }
+    }
+}
+
+impl Extensions {
+    pub fn get_extensios(&self, extension_type: &str) -> Vec<String> {
+        match extension_type {
+            "audio" => self.audio.clone(),
+            "documents" => self.documents.clone(),
+            "image" => self.image.clone(),
+            "video" => self.video.clone(),
+            _ => vec![],
         }
     }
 }
