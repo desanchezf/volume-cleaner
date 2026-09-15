@@ -16,7 +16,7 @@ A Rust + egui GUI application to scan storage volumes, preview media and documen
   - 🎵 Audio (mp3, flac, wav, aac, etc.)
 - **Custom extensions**: Users can specify additional custom file extensions to include in the scan (e.g., `.docx`, `.psd`, `.raw`).
 - **Unsupported format handling**: For file types without built-in preview support (e.g., `.docx`), the application offers a **"Reveal in Explorer/Finder"** option to open the file's location in the system file manager, allowing the user to open it with the default application.
-- **Duplicate detection**: Calculate file hashes (e.g., SHA-256) to identify byte-identical copies. The **original** is the first occurrence WalkDir visits during the scan (depth-first, unsorted). Extra copies with the same hash are marked for deletion; the original stays unless the user later marks it in the review GUI.
+- **Duplicate detection**: Calculate file hashes (e.g., SHA-256) to identify byte-identical copies. The **original** is the first occurrence WalkDir visits during the scan (depth-first, unsorted). The review GUI shows that flag (`is_duped`); the user marks keep or delete per file. Nothing is removed from disk until confirmation.
 - **Tinder-like review**: Navigate files sequentially and mark for deletion or retention using keyboard shortcuts (e.g., `Y`/`N`, arrow keys).
 - **Safe cleanup workflow**:
   - Copy retained files to a new output directory.

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -7,15 +7,19 @@ use walkdir::WalkDir;
 
 #[derive(Clone)]
 pub struct Entry {
-    path: PathBuf,
-    size: u64,
-    hash: String,
-    extension: String,
-    is_duped: bool,
-    marked_for_deletion: bool,
+    pub path: PathBuf,
+    pub size: u64,
+    pub hash: String,
+    pub extension: String,
+    pub is_duped: bool,
+    pub marked_for_deletion: bool,
 }
 
-pub fn scan_directory(start_dir: &str, extensions: &Vec<String>) -> Vec<Entry> {
+pub fn scan_directory(
+    start_dir: &str,
+    extensions: &[String],
+    mut on_progress: impl FnMut(f32, &str),
+) -> Vec<Entry> {
     let mut files = Vec::<Entry>::new();
 
     for entry in WalkDir::new(start_dir) {
@@ -54,13 +58,23 @@ pub fn scan_directory(start_dir: &str, extensions: &Vec<String>) -> Vec<Entry> {
                 is_duped: false,
                 marked_for_deletion: false,
             });
+
+            if files.len() % 25 == 0 {
+                let found = files.len();
+                let fraction = 0.45 * (found as f32) / (found as f32 + 400.0);
+                on_progress(fraction, &format!("Found {found} files"));
+            }
         }
     }
 
+    on_progress(0.5, &format!("Found {} files, checking duplicates…", files.len()));
     files
 }
 
-pub fn check_files(files_vector: &[Entry]) -> Vec<Entry> {
+pub fn check_files(
+    files_vector: &[Entry],
+    mut on_progress: impl FnMut(f32, &str),
+) -> Vec<Entry> {
     let mut files = files_vector.to_vec();
 
     let mut grouped_by_size: HashMap<u64, Vec<usize>> = HashMap::new();
@@ -68,15 +82,22 @@ pub fn check_files(files_vector: &[Entry]) -> Vec<Entry> {
         grouped_by_size.entry(file.size).or_default().push(i);
     }
 
-    let mut grouped_by_hash: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut to_hash: Vec<usize> = Vec::new();
     for indices in grouped_by_size.values() {
-        if indices.len() < 2 {
-            continue;
+        if indices.len() >= 2 {
+            to_hash.extend(indices);
         }
-        for &i in indices {
-            let hash = calculate_hash(&files[i].path);
-            files[i].hash = hash.clone();
-            grouped_by_hash.entry(hash).or_default().push(i);
+    }
+
+    let mut grouped_by_hash: HashMap<String, Vec<usize>> = HashMap::new();
+    let total = to_hash.len().max(1);
+    for (done, &i) in to_hash.iter().enumerate() {
+        let hash = calculate_hash(&files[i].path);
+        files[i].hash = hash.clone();
+        grouped_by_hash.entry(hash).or_default().push(i);
+        if done % 4 == 0 || done + 1 == to_hash.len() {
+            let fraction = 0.5 + 0.5 * ((done + 1) as f32) / (total as f32);
+            on_progress(fraction, &format!("Hashing {}/{total}", done + 1));
         }
     }
 
@@ -121,7 +142,7 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     if let Some(home) = home_dir() {
         if let Ok(rest) = path.strip_prefix(&home) {
             if rest.as_os_str().is_empty() {
@@ -132,107 +153,4 @@ fn display_path(path: &Path) -> String {
         }
     }
     path.display().to_string()
-}
-
-pub fn print_files(files: &[Entry], print_marked_as_deleted: bool, print_marked_as_duped: bool) {
-    let visible: Vec<&Entry> = files
-        .iter()
-        .filter(|file| {
-            if !print_marked_as_deleted && !print_marked_as_duped {
-                return true;
-            }
-            (print_marked_as_duped && file.is_duped)
-                || (print_marked_as_deleted && file.marked_for_deletion)
-        })
-        .collect();
-
-    let paths: Vec<String> = visible.iter().map(|f| display_path(&f.path)).collect();
-    let path_w = paths
-        .iter()
-        .map(|p| p.len())
-        .max()
-        .unwrap_or(4)
-        .max("path".len());
-    let hash_w = visible
-        .iter()
-        .map(|f| f.hash.len().max(1))
-        .max()
-        .unwrap_or(4)
-        .max("hash".len());
-    let ext_w = visible
-        .iter()
-        .map(|f| f.extension.len().max(1))
-        .max()
-        .unwrap_or(9)
-        .max("extension".len());
-
-    println!(
-        "{:<path_w$}  {:>14}  {:<hash_w$}  {:<ext_w$}  {:<9}  {}",
-        "path",
-        "Peso en Bytes",
-        "hash",
-        "extension",
-        "duplicado",
-        "a borrar",
-        path_w = path_w,
-        hash_w = hash_w,
-        ext_w = ext_w,
-    );
-    println!(
-        "{:-<path_w$}  {:-<14}  {:-<hash_w$}  {:-<ext_w$}  {:-<9}  {:-<8}",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        path_w = path_w,
-        hash_w = hash_w,
-        ext_w = ext_w,
-    );
-
-    for file in visible {
-        let hash = if file.hash.is_empty() {
-            "-"
-        } else {
-            file.hash.as_str()
-        };
-        let extension = if file.extension.is_empty() {
-            "-"
-        } else {
-            file.extension.as_str()
-        };
-        let duplicated = if file.is_duped { "sí" } else { "no" };
-        let to_delete = if file.marked_for_deletion { "sí" } else { "no" };
-
-        println!(
-            "{:<path_w$}  {:>14}  {:<hash_w$}  {:<ext_w$}  {:<9}  {}",
-            display_path(&file.path),
-            file.size,
-            hash,
-            extension,
-            duplicated,
-            to_delete,
-            path_w = path_w,
-            hash_w = hash_w,
-            ext_w = ext_w,
-        );
-    }
-}
-
-
-pub fn mark_for_deletion(files: &mut [Entry]) {
-    let mut kept_hashes = HashSet::new();
-
-    for file in files.iter_mut() {
-        if !file.is_duped || file.hash.is_empty() {
-            continue;
-        }
-        // Original = primera ocurrencia de este hash en el orden de WalkDir (el Vec del scan).
-        if kept_hashes.contains(&file.hash) {
-            file.marked_for_deletion = true;
-        } else {
-            kept_hashes.insert(file.hash.clone());
-        }
-    }
 }
