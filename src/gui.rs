@@ -90,6 +90,12 @@ enum FilterKind {
     Custom,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum SortKey {
+    Name,
+    Size,
+}
+
 impl FilterKind {
     fn label(self) -> &'static str {
         match self {
@@ -117,6 +123,8 @@ pub struct VolumeCleanerApp {
     custom_extensions: String,
     presets: Extensions,
     files: Vec<Entry>,
+    sort_key: SortKey,
+    sort_ascending: bool,
     review_index: usize,
     scan_progress: f32,
     scan_rx: Option<Receiver<ScanEvent>>,
@@ -133,6 +141,8 @@ impl VolumeCleanerApp {
             custom_extensions: String::new(),
             presets: Extensions::default(),
             files: Vec::new(),
+            sort_key: SortKey::Name,
+            sort_ascending: true,
             review_index: 0,
             scan_progress: 0.0,
             scan_rx: None,
@@ -306,13 +316,36 @@ impl VolumeCleanerApp {
     fn ui_duplicates(&mut self, ui: &mut egui::Ui) {
         ui.label("Byte-identical copies. Keep or delete each row; nothing is removed until you confirm later.");
 
-        let duped: Vec<usize> = self
+        ui.horizontal(|ui| {
+            ui.label("Sort by:");
+            for (key, label) in [(SortKey::Name, "Name"), (SortKey::Size, "Size")] {
+                if ui.selectable_label(self.sort_key == key, label).clicked() {
+                    if self.sort_key == key {
+                        self.sort_ascending = !self.sort_ascending;
+                    } else {
+                        self.sort_key = key;
+                        self.sort_ascending = true;
+                    }
+                }
+            }
+            ui.weak(if self.sort_ascending { "▲" } else { "▼" });
+        });
+
+        let mut duped: Vec<usize> = self
             .files
             .iter()
             .enumerate()
             .filter(|(_, file)| file.is_duped)
             .map(|(i, _)| i)
             .collect();
+
+        match self.sort_key {
+            SortKey::Name => duped.sort_by(|&a, &b| self.files[a].path.cmp(&self.files[b].path)),
+            SortKey::Size => duped.sort_by_key(|&i| self.files[i].size),
+        }
+        if !self.sort_ascending {
+            duped.reverse();
+        }
 
         TableBuilder::new(ui)
             .striped(true)

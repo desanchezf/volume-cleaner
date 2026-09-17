@@ -82,10 +82,25 @@ pub fn check_files(
         grouped_by_size.entry(file.size).or_default().push(i);
     }
 
+    // Dentro de cada grupo de mismo tamaño, descarta primero comparando solo
+    // los primeros bytes: si ya difieren ahí, nos ahorramos leer el archivo
+    // entero para el hash completo.
     let mut to_hash: Vec<usize> = Vec::new();
     for indices in grouped_by_size.values() {
-        if indices.len() >= 2 {
-            to_hash.extend(indices);
+        if indices.len() < 2 {
+            continue;
+        }
+
+        let mut grouped_by_partial: HashMap<String, Vec<usize>> = HashMap::new();
+        for &i in indices {
+            let partial = calculate_partial_hash(&files[i].path);
+            grouped_by_partial.entry(partial).or_default().push(i);
+        }
+
+        for partial_indices in grouped_by_partial.values() {
+            if partial_indices.len() >= 2 {
+                to_hash.extend(partial_indices);
+            }
         }
     }
 
@@ -126,9 +141,27 @@ fn calculate_hash(file_path: &Path) -> String {
             Err(_) => return String::new(),
         }
     }
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
+    hex_encode(&hasher.finalize())
+}
+
+// Cuántos bytes iniciales se leen para el descarte rápido antes del hash completo.
+const PARTIAL_HASH_BYTES: usize = 4096;
+
+fn calculate_partial_hash(file_path: &Path) -> String {
+    let file = match File::open(file_path) {
+        Ok(file) => file,
+        Err(_) => return String::new(),
+    };
+    let mut buffer = Vec::with_capacity(PARTIAL_HASH_BYTES);
+    if file.take(PARTIAL_HASH_BYTES as u64).read_to_end(&mut buffer).is_err() {
+        return String::new();
+    }
+    hex_encode(&Sha256::digest(&buffer))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         hex.push_str(&format!("{:02x}", byte));
     }
     hex

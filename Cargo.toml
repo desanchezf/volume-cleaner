@@ -8,5 +8,5 @@ eframe = "0.36.2"
 egui = "0.36.2"
 walkdir = "2.5.0"
 sha2 = "0.11.0"
-rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 egui_extras = "0.36.2"
