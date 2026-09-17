@@ -1,11 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use crate::config::Extensions;
+use crate::config::{Extensions, FileCategory};
 use crate::filesystem::{self, display_path, Entry};
+use crate::platform;
 
 enum ScanEvent {
     Progress(f32, String),
@@ -128,11 +129,16 @@ pub struct VolumeCleanerApp {
     review_index: usize,
     scan_progress: f32,
     scan_rx: Option<Receiver<ScanEvent>>,
+    loaded_image_path: Option<PathBuf>,
+    current_image_uri: Option<String>,
+    show_exit_dialog: bool,
+    exit_confirmed: bool,
 }
 
 impl VolumeCleanerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_rust_theme(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         Self {
             status: "-".to_string(),
             tab: Tab::Duplicates,
@@ -146,6 +152,10 @@ impl VolumeCleanerApp {
             review_index: 0,
             scan_progress: 0.0,
             scan_rx: None,
+            loaded_image_path: None,
+            current_image_uri: None,
+            show_exit_dialog: false,
+            exit_confirmed: false,
         }
     }
 
@@ -256,6 +266,23 @@ impl VolumeCleanerApp {
         }
 
         ctx.request_repaint();
+    }
+
+    // Carga los bytes de la imagen actual en el contexto de egui, solo si
+    // ha cambiado respecto al archivo mostrado en el frame anterior.
+    fn ensure_image_loaded(&mut self, ctx: &egui::Context, path: &Path) {
+        if self.loaded_image_path.as_deref() == Some(path) {
+            return;
+        }
+        self.loaded_image_path = Some(path.to_path_buf());
+        self.current_image_uri = match std::fs::read(path) {
+            Ok(bytes) => {
+                let uri = format!("bytes://{}", path.display());
+                ctx.include_bytes(uri.clone(), bytes);
+                Some(uri)
+            }
+            Err(_) => None,
+        };
     }
 
     fn ui_header(&mut self, ui: &mut egui::Ui) {
@@ -437,12 +464,23 @@ impl VolumeCleanerApp {
         let index = self.review_index;
         ui.label(format!("{}/{}", index + 1, total));
         ui.label(display_path(&self.files[index].path));
-        let ext = &self.files[index].extension;
+        let ext = self.files[index].extension.clone();
         ui.label(if ext.is_empty() {
             "extension: -".to_string()
         } else {
             format!("extension: {ext}")
         });
+
+        ui.separator();
+        let path = self.files[index].path.clone();
+        match self.presets.category_for(&ext) {
+            FileCategory::Image => self.ui_image_preview(ui, &path),
+            FileCategory::Documents if is_plain_text_extension(&ext) => {
+                self.ui_text_preview(ui, &path)
+            }
+            _ => self.ui_reveal_fallback(ui, &path),
+        }
+        ui.separator();
 
         ui.horizontal(|ui| {
             if ui.button("Keep").clicked() {
@@ -453,6 +491,72 @@ impl VolumeCleanerApp {
                 self.files[index].marked_for_deletion = true;
                 self.review_index = (index + 1).min(total - 1);
             }
+        });
+    }
+
+    fn ui_image_preview(&mut self, ui: &mut egui::Ui, path: &Path) {
+        self.ensure_image_loaded(ui.ctx(), path);
+        match &self.current_image_uri {
+            Some(uri) => {
+                ui.add(
+                    egui::Image::new(uri.clone())
+                        .max_height(320.0)
+                        .max_width(ui.available_width())
+                        .shrink_to_fit(),
+                );
+            }
+            None => {
+                ui.colored_label(egui::Color32::from_rgb(200, 80, 80), "Could not load image");
+            }
+        }
+    }
+
+    fn ui_text_preview(&self, ui: &mut egui::Ui, path: &Path) {
+        const MAX_PREVIEW_BYTES: u64 = 200 * 1024;
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if size > MAX_PREVIEW_BYTES {
+            ui.weak("File too large to preview as text.");
+            return;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(content).monospace()).wrap());
+                });
+            }
+            Err(_) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 80, 80),
+                    "Could not read file as text",
+                );
+            }
+        }
+    }
+
+    fn ui_reveal_fallback(&self, ui: &mut egui::Ui, path: &Path) {
+        ui.weak("No preview available for this file type.");
+        if ui.button("Reveal in file manager").clicked() {
+            platform::reveal_in_file_manager(path);
+        }
+    }
+
+    fn ui_exit_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_exit_dialog {
+            return;
+        }
+        egui::Modal::new(egui::Id::new("exit_confirm")).show(ctx, |ui| {
+            ui.label("Are you sure you want to exit Volume Cleaner?");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    self.show_exit_dialog = false;
+                }
+                if ui.button("Exit").clicked() {
+                    self.show_exit_dialog = false;
+                    self.exit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
         });
     }
 
@@ -472,6 +576,10 @@ impl VolumeCleanerApp {
     }
 }
 
+fn is_plain_text_extension(extension: &str) -> bool {
+    matches!(extension.to_ascii_lowercase().as_str(), "txt" | "md")
+}
+
 fn panel_frame(ui: &egui::Ui, inner: egui::Margin, outer: egui::Margin) -> egui::Frame {
     egui::Frame::new()
         .fill(ui.visuals().panel_fill)
@@ -482,6 +590,13 @@ fn panel_frame(ui: &egui::Ui, inner: egui::Margin, outer: egui::Margin) -> egui:
 impl eframe::App for VolumeCleanerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_scan(ui.ctx());
+
+        if !self.exit_confirmed && ui.ctx().input(|i| i.viewport().close_requested()) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_exit_dialog = true;
+        }
+        self.ui_exit_dialog(ui.ctx());
+
         egui::Panel::top("header")
             .show_separator_line(false)
             .frame(panel_frame(

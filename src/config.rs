@@ -55,4 +55,29 @@ impl Extensions {
             _ => vec![],
         }
     }
+
+    /// A qué grupo pertenece una extensión, para elegir el visor adecuado.
+    /// Si no está en ninguno de los grupos predefinidos, se considera custom.
+    pub fn category_for(&self, extension: &str) -> FileCategory {
+        if self.image.iter().any(|e| e.eq_ignore_ascii_case(extension)) {
+            FileCategory::Image
+        } else if self.video.iter().any(|e| e.eq_ignore_ascii_case(extension)) {
+            FileCategory::Video
+        } else if self.audio.iter().any(|e| e.eq_ignore_ascii_case(extension)) {
+            FileCategory::Audio
+        } else if self.documents.iter().any(|e| e.eq_ignore_ascii_case(extension)) {
+            FileCategory::Documents
+        } else {
+            FileCategory::Custom
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FileCategory {
+    Image,
+    Video,
+    Audio,
+    Documents,
+    Custom,
 }
