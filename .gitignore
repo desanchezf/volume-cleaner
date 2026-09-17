@@ -30,3 +30,6 @@ LEARNING.md
 
 # macOS
 .DS_Store
+
+# Volume Cleaner: persisted review state / last session (generated at runtime)
+/session/

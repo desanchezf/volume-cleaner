@@ -13,6 +13,9 @@ pub struct Entry {
     pub extension: String,
     pub is_duped: bool,
     pub marked_for_deletion: bool,
+    /// Whether the user has already made a keep/delete decision for this file.
+    /// Persisted so a review session can resume where it left off.
+    pub reviewed: bool,
 }
 
 pub fn scan_directory(
@@ -57,6 +60,7 @@ pub fn scan_directory(
                 extension: path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string(),
                 is_duped: false,
                 marked_for_deletion: false,
+                reviewed: false,
             });
 
             if files.len() % 25 == 0 {
@@ -186,4 +190,135 @@ pub(crate) fn display_path(path: &Path) -> String {
         }
     }
     path.display().to_string()
+}
+
+// --- Persistencia del estado de revisión ---
+//
+// Guarda, por carpeta escaneada, qué archivos ya se han revisado y su
+// decisión (keep/delete), junto con el índice de revisión actual, para que
+// cerrar y reabrir la aplicación permita retomar la revisión donde se dejó.
+
+fn app_state_dir() -> Option<PathBuf> {
+    Some(PathBuf::from("session"))
+}
+
+fn review_state_file_for(folder: &Path) -> Option<PathBuf> {
+    let dir = app_state_dir()?.join("state");
+    let key = hex_encode(&Sha256::digest(folder.to_string_lossy().as_bytes()));
+    Some(dir.join(format!("{key}.tsv")))
+}
+
+pub struct ReviewState {
+    pub decisions: HashMap<PathBuf, (bool, bool)>, // (marked_for_deletion, reviewed)
+    pub review_index: usize,
+}
+
+pub fn save_review_state(folder: &Path, files: &[Entry], review_index: usize) -> std::io::Result<()> {
+    let Some(path) = review_state_file_for(folder) else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut content = format!("folder\t{}\n", folder.display());
+    content.push_str(&format!("review_index\t{review_index}\n"));
+    for file in files {
+        content.push_str(&format!(
+            "{}\t{}\t{}\n",
+            file.marked_for_deletion as u8,
+            file.reviewed as u8,
+            file.path.display(),
+        ));
+    }
+    std::fs::write(path, content)
+}
+
+pub fn load_review_state(folder: &Path) -> Option<ReviewState> {
+    let path = review_state_file_for(folder)?;
+    let content = std::fs::read_to_string(path).ok()?;
+
+    let mut decisions = HashMap::new();
+    let mut review_index = 0usize;
+    for line in content.lines() {
+        let mut parts = line.splitn(3, '\t');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some("review_index"), Some(value), None) => {
+                review_index = value.parse().unwrap_or(0);
+            }
+            (Some("folder"), Some(_), None) => {}
+            (Some(marked), Some(reviewed), Some(path_str)) => {
+                decisions.insert(PathBuf::from(path_str), (marked == "1", reviewed == "1"));
+            }
+            _ => {}
+        }
+    }
+
+    Some(ReviewState { decisions, review_index })
+}
+
+pub fn apply_review_state(files: &mut [Entry], state: &ReviewState) {
+    for file in files.iter_mut() {
+        if let Some(&(marked, reviewed)) = state.decisions.get(&file.path) {
+            file.marked_for_deletion = marked;
+            file.reviewed = reviewed;
+        }
+    }
+}
+
+// --- Persistencia de la última sesión (carpeta y filtro) ---
+//
+// Permite que, al reabrir la aplicación, se recuerde qué carpeta y filtro se
+// usaron por última vez, para no tener que volver a navegar hasta ella antes
+// de reanudar la revisión.
+
+pub struct LastSession {
+    pub folder: PathBuf,
+    pub filter_label: String,
+    pub custom_extensions: String,
+}
+
+fn last_session_file() -> Option<PathBuf> {
+    app_state_dir().map(|dir| dir.join("last_session.tsv"))
+}
+
+pub fn save_last_session(folder: &Path, filter_label: &str, custom_extensions: &str) {
+    let Some(path) = last_session_file() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let content = format!(
+        "folder\t{}\nfilter\t{filter_label}\ncustom\t{custom_extensions}\n",
+        folder.display(),
+    );
+    let _ = std::fs::write(path, content);
+}
+
+pub fn load_last_session() -> Option<LastSession> {
+    let path = last_session_file()?;
+    let content = std::fs::read_to_string(path).ok()?;
+
+    let mut folder = None;
+    let mut filter_label = String::new();
+    let mut custom_extensions = String::new();
+    for line in content.lines() {
+        if let Some((key, value)) = line.split_once('\t') {
+            match key {
+                "folder" => folder = Some(PathBuf::from(value)),
+                "filter" => filter_label = value.to_string(),
+                "custom" => custom_extensions = value.to_string(),
+                _ => {}
+            }
+        }
+    }
+
+    Some(LastSession {
+        folder: folder?,
+        filter_label,
+        custom_extensions,
+    })
 }
