@@ -129,6 +129,119 @@ cargo build --release
 
 Run the binary from `target/release/volume-cleaner` (or `volume-cleaner.exe` on Windows).
 
+## Building per platform
+
+Every build needs a Rust toolchain installed with [rustup](https://rustup.rs). The table lists which host can produce which binary:
+
+| Build host ↓ / Target → | Linux | Windows | macOS |
+|---|---|---|---|
+| **Linux / WSL (Ubuntu)** | ✅ Native | ✅ Cross (MinGW or `cargo-xwin`) | ❌ Not supported |
+| **Windows** | ✅ Through WSL | ✅ Native (MSVC) | ❌ Not supported |
+| **macOS** | ❌ Not covered | ❌ Not covered | ✅ Native (Apple Silicon, Intel, Universal) |
+
+To build for macOS you need Apple's SDK, so macOS binaries have to be built on a Mac (or a macOS CI runner).
+
+Each OS produces its own binary, so don't share the `target/` folder between Windows and WSL. Move the source with git instead (`git push` / `git pull`) and build on each side.
+
+### Linux / WSL (Ubuntu)
+
+```bash
+# Toolchain (only once)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+sudo apt install build-essential pkg-config
+```
+
+**Linux binary (native)**
+
+```bash
+cargo build --release
+# → target/release/volume-cleaner
+```
+
+Under WSL the window opens through WSLg (Windows 11, or Windows 10 with WSLg). `rfd` uses the XDG desktop portal for the "Browse…" dialog. If the dialog does not appear, install the portal:
+
+```bash
+sudo apt install xdg-desktop-portal xdg-desktop-portal-gtk
+```
+
+**Windows `.exe` (cross-compiled, GNU toolchain)** — the simplest option:
+
+```bash
+sudo apt install mingw-w64
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu
+# → target/x86_64-pc-windows-gnu/release/volume-cleaner.exe
+```
+
+**Windows `.exe` (cross-compiled, MSVC toolchain)** — the same ABI as a native Windows build, using [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin):
+
+```bash
+cargo install --locked cargo-xwin
+rustup target add x86_64-pc-windows-msvc
+cargo xwin build --release --target x86_64-pc-windows-msvc
+# → target/x86_64-pc-windows-msvc/release/volume-cleaner.exe
+```
+
+Executables copied out of `\\wsl$\…` may be flagged by Windows SmartScreen ("Windows protected your PC") because they are unsigned and carry a downloaded-file mark. Choose **More info → Run anyway**, or unblock them with PowerShell's `Unblock-File`.
+
+### Windows
+
+1. Install [rustup-init.exe](https://rustup.rs) and the **Visual Studio Build Tools** with the *Desktop development with C++* workload.
+2. Clone the repository into a Windows folder, not under `\\wsl$\…` (building there is very slow).
+3. Build:
+
+```powershell
+cargo build --release
+# → target\release\volume-cleaner.exe   (x64)
+```
+
+Other Windows architectures (install the matching MSVC build tools component for each):
+
+| Architecture | Command |
+|---|---|
+| x64 | `cargo build --release` |
+| ARM64 | `rustup target add aarch64-pc-windows-msvc` then `cargo build --release --target aarch64-pc-windows-msvc` |
+| x86 (32-bit) | `rustup target add i686-pc-windows-msvc` then `cargo build --release --target i686-pc-windows-msvc` |
+
+To get a Linux binary from Windows, open a WSL terminal and follow the [Linux / WSL](#linux--wsl-ubuntu) steps.
+
+Release builds hide the console window (`windows_subsystem = "windows"` in `main.rs`). Debug builds keep it open so `println!` output and panics stay visible.
+
+### macOS
+
+```bash
+xcode-select --install                     # Command Line Tools (only once)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+| Target | Command | Output |
+|---|---|---|
+| Native (current Mac) | `cargo build --release` | `target/release/volume-cleaner` |
+| Apple Silicon | `cargo build --release --target aarch64-apple-darwin` | `target/aarch64-apple-darwin/release/volume-cleaner` |
+| Intel | `cargo build --release --target x86_64-apple-darwin` | `target/x86_64-apple-darwin/release/volume-cleaner` |
+
+Universal binary (runs on both Apple Silicon and Intel):
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cargo build --release --target aarch64-apple-darwin
+cargo build --release --target x86_64-apple-darwin
+lipo -create -output volume-cleaner \
+  target/aarch64-apple-darwin/release/volume-cleaner \
+  target/x86_64-apple-darwin/release/volume-cleaner
+```
+
+### Troubleshooting: `wgpu-hal` fails to compile on Windows
+
+If a Windows build fails inside `wgpu-hal` with errors such as `expected ID3D12Device, found Direct3D12::ID3D12Device` and the note *"multiple different versions of crate `windows`"*, then `Cargo.lock` has pinned `gpu-allocator` to an older `windows` crate. Unify it with:
+
+```bash
+cargo update -p windows@0.58.0 --precise 0.62.2
+```
+
+The `Cargo.lock` in this repository already includes this fix.
+
 ### Pre-built Binaries
 
 Pre-compiled binaries for common platforms will be available in the [Releases](https://github.com/your-username/volume-cleaner/releases) section.
@@ -145,6 +258,36 @@ Pre-compiled binaries for common platforms will be available in the [Releases](h
 - [ ] Batch selection and filters.
 - [ ] Light theme toggle (currently dark-only).
 - [ ] Operation log export (JSON/CSV).
+
+## TODO: Output directory workflow
+
+Planned redesign: the user picks an **input** volume and an **output** volume. Both features copy what should be kept into the output folder before anything is removed from the source.
+
+### Agreed design
+
+- **Duplicates**: one copy per duplicate group goes to `<output>/duplicates_output/<relative path>`. Files that are not duplicated are not copied.
+- **Review files**: only files marked **keep** are copied, to `<output>/<extension>/<relative path>`. Files marked delete and files not yet reviewed are not copied.
+- **Relative paths are preserved** (e.g. `<output>/jpg/2019/Trip/IMG_0001.jpg`), so files with the same name from different folders never collide. Existing files are never overwritten: if the destination exists with different content, the copy is renamed `IMG_0001 (1).jpg`.
+- **Safe copies**: each file is copied to `name.part`, its SHA-256 is checked against the source, and only then is it renamed to its final name.
+- **CSV reports** in `<output>`, one per feature (`duplicates_report.csv`, `review_report.csv`). They are append-only, with one row flushed per file: `source_path, dest_path, size, sha256, status (copied|skipped|deleted|changed|error), timestamp`. Quoting uses the `csv` crate.
+- **Resumable**: review decisions move from `session/` into `<output>/.volume-cleaner/review_state.tsv`, so the output folder is self-contained. Pick the same input and output to continue, even on another machine. Files already recorded in the CSV with the same size and hash are skipped.
+- **Batch execution**: the user selects first, then runs everything in one batch with a progress bar. Before running, a summary shows how many files will be copied and deleted, their total size, and the free space in `<output>`. A **Cancel** button finishes the current file and stops; the next run resumes from the CSV.
+- **No permanent deletion**: files are sent to the system trash (Recycle Bin / Trash) via the `trash` crate instead of `remove_file`, so they can be restored. Every deletion is also logged in the CSV.
+
+### Safety checks
+
+- `<output>` must not be inside the input folder.
+- There must be enough free space in `<output>`.
+- Extensions are normalized (`JPG` → `jpg`). Files without an extension go to `<output>/no_extension/`.
+- A duplicate is re-hashed right before deletion, and deleted only if its hash matches the verified copy in `<output>`. Files that changed since the scan are left untouched and logged as `changed`.
+- A duplicate group can never be left without any copy: if every file in the group is marked delete, the batch refuses to start.
+- Errors (locked files, missing permissions, Windows paths over 260 characters) are logged as `error` with the reason, and the batch carries on with the next file.
+
+### Open questions
+
+1. **Duplicates: is the original also removed from the source?** Proposal: copy the original to `<output>/duplicates_output/…`, send the *other* files of the group to the trash, and leave the original where it is.
+2. **Duplicates: which file is the "original"?** Proposal: the one marked **keep** in the table, or the first one found if none is marked. If several are marked keep, only one is copied and the others stay in the source untouched.
+3. **Review files: does the batch also delete?** Proposal: keep files are copied, and files marked delete are sent to the trash in the same batch.
 
 ## Contributing
 
