@@ -33,6 +33,8 @@ impl Default for Extensions {
                 "webp".to_string(),
                 "gif".to_string(),
                 "bmp".to_string(),
+                "heic".to_string(),
+                "heif".to_string(),
             ],
             video: vec![
                 "mp4".to_string(),

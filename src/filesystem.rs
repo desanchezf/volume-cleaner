@@ -16,16 +16,47 @@ pub struct Entry {
     /// Whether the user has already made a keep/delete decision for this file.
     /// Persisted so a review session can resume where it left off.
     pub reviewed: bool,
+    /// Fecha de modificación leída durante el escaneo (para ordenar la revisión).
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// Carpetas que se saltan por defecto al escanear: `.*` = cualquier carpeta
+/// oculta; el resto se compara por nombre exacto (sin distinguir mayúsculas).
+pub const DEFAULT_EXCLUDES: &str = ".*, node_modules, __pycache__, venv, dist, build, target, Library";
+
+/// Convierte el texto de exclusiones (separado por comas o espacios) en una lista.
+pub fn parse_excludes(text: &str) -> Vec<String> {
+    text.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn is_excluded_dir(name: &str, excludes: &[String]) -> bool {
+    excludes.iter().any(|pattern| {
+        if pattern == ".*" {
+            name.starts_with('.')
+        } else {
+            pattern.eq_ignore_ascii_case(name)
+        }
+    })
 }
 
 pub fn scan_directory(
     start_dir: &str,
     extensions: &[String],
+    excludes: &[String],
     mut on_progress: impl FnMut(f32, &str),
 ) -> Vec<Entry> {
     let mut files = Vec::<Entry>::new();
 
-    for entry in WalkDir::new(start_dir) {
+    // La carpeta raíz nunca se excluye (aunque el usuario elija una oculta).
+    let walker = WalkDir::new(start_dir).into_iter().filter_entry(|entry| {
+        entry.depth() == 0
+            || !entry.file_type().is_dir()
+            || !is_excluded_dir(&entry.file_name().to_string_lossy(), excludes)
+    });
+    for entry in walker {
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => continue, // sin permiso / enlace roto: saltar
@@ -48,8 +79,8 @@ pub fn scan_directory(
         };
 
         if allowed {
-            let size = match entry.metadata() {
-                Ok(meta) => meta.len(),
+            let (size, modified) = match entry.metadata() {
+                Ok(meta) => (meta.len(), meta.modified().ok()),
                 Err(_) => continue,
             };
 
@@ -61,6 +92,7 @@ pub fn scan_directory(
                 is_duped: false,
                 marked_for_deletion: false,
                 reviewed: false,
+                modified,
             });
 
             if files.len() % 25 == 0 {
@@ -131,7 +163,7 @@ pub fn check_files(
     files
 }
 
-fn calculate_hash(file_path: &Path) -> String {
+pub fn calculate_hash(file_path: &Path) -> String {
     let mut file = match File::open(file_path) {
         Ok(file) => file,
         Err(_) => return String::new(),
@@ -198,8 +230,36 @@ pub(crate) fn display_path(path: &Path) -> String {
 // decisión (keep/delete), junto con el índice de revisión actual, para que
 // cerrar y reabrir la aplicación permita retomar la revisión donde se dejó.
 
-fn app_state_dir() -> Option<PathBuf> {
-    Some(PathBuf::from("session"))
+/// Carpeta de datos de la aplicación, independiente de desde dónde se lance:
+/// - macOS: `~/Library/Application Support/volume-cleaner`
+/// - Windows: `%APPDATA%\volume-cleaner`
+/// - Linux: `~/.local/share/volume-cleaner`
+pub fn app_state_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join("volume-cleaner"))
+}
+
+/// Las versiones anteriores guardaban el estado en `./session`, relativo al
+/// directorio de trabajo. Si existe y la nueva carpeta aún no tiene datos,
+/// se copia una vez para no perder las decisiones ya tomadas.
+pub fn migrate_legacy_state() {
+    let legacy = PathBuf::from("session");
+    let Some(target) = app_state_dir() else {
+        return;
+    };
+    if !legacy.is_dir() || target.join("last_session.tsv").exists() {
+        return;
+    }
+    for entry in WalkDir::new(&legacy).into_iter().filter_map(Result::ok) {
+        let Ok(relative) = entry.path().strip_prefix(&legacy) else {
+            continue;
+        };
+        let dest = target.join(relative);
+        if entry.file_type().is_dir() {
+            let _ = std::fs::create_dir_all(&dest);
+        } else if !dest.exists() {
+            let _ = std::fs::copy(entry.path(), &dest);
+        }
+    }
 }
 
 fn review_state_file_for(folder: &Path) -> Option<PathBuf> {
@@ -276,13 +336,24 @@ pub struct LastSession {
     pub folder: PathBuf,
     pub filter_label: String,
     pub custom_extensions: String,
+    /// Carpeta de salida; `None` = trabajar sobre el propio volumen.
+    pub output_folder: Option<PathBuf>,
+    pub use_output_folder: bool,
+    pub excludes: String,
 }
 
 fn last_session_file() -> Option<PathBuf> {
     app_state_dir().map(|dir| dir.join("last_session.tsv"))
 }
 
-pub fn save_last_session(folder: &Path, filter_label: &str, custom_extensions: &str) {
+pub fn save_last_session(
+    folder: &Path,
+    filter_label: &str,
+    custom_extensions: &str,
+    use_output_folder: bool,
+    output_folder: Option<&Path>,
+    excludes: &str,
+) {
     let Some(path) = last_session_file() else {
         return;
     };
@@ -291,10 +362,15 @@ pub fn save_last_session(folder: &Path, filter_label: &str, custom_extensions: &
             return;
         }
     }
-    let content = format!(
-        "folder\t{}\nfilter\t{filter_label}\ncustom\t{custom_extensions}\n",
+    let mut content = format!(
+        "folder\t{}\nfilter\t{filter_label}\ncustom\t{custom_extensions}\noutput_mode\t{}\n",
         folder.display(),
+        if use_output_folder { "folder" } else { "in_place" },
     );
+    if let Some(output) = output_folder {
+        content.push_str(&format!("output\t{}\n", output.display()));
+    }
+    content.push_str(&format!("exclude\t{excludes}\n"));
     let _ = std::fs::write(path, content);
 }
 
@@ -305,12 +381,18 @@ pub fn load_last_session() -> Option<LastSession> {
     let mut folder = None;
     let mut filter_label = String::new();
     let mut custom_extensions = String::new();
+    let mut output_folder = None;
+    let mut use_output_folder = false;
+    let mut excludes = DEFAULT_EXCLUDES.to_string();
     for line in content.lines() {
         if let Some((key, value)) = line.split_once('\t') {
             match key {
                 "folder" => folder = Some(PathBuf::from(value)),
                 "filter" => filter_label = value.to_string(),
                 "custom" => custom_extensions = value.to_string(),
+                "output" => output_folder = Some(PathBuf::from(value)),
+                "output_mode" => use_output_folder = value == "folder",
+                "exclude" => excludes = value.to_string(),
                 _ => {}
             }
         }
@@ -320,5 +402,38 @@ pub fn load_last_session() -> Option<LastSession> {
         folder: folder?,
         filter_label,
         custom_extensions,
+        output_folder,
+        use_output_folder,
+        excludes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_skips_excluded_and_hidden_folders() {
+        let root = std::env::temp_dir().join(format!("vc-scan-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["keep/sub", "node_modules/pkg", ".venv/lib", "Build"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in ["a.jpg", "keep/sub/b.jpg", "node_modules/pkg/c.jpg", ".venv/lib/d.jpg", "Build/e.jpg"] {
+            std::fs::write(root.join(file), b"x").unwrap();
+        }
+
+        let excludes = parse_excludes(DEFAULT_EXCLUDES);
+        let files = scan_directory(root.to_str().unwrap(), &["jpg".to_string()], &excludes, |_, _| {});
+        let mut names: Vec<String> = files
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        // "Build" se excluye sin distinguir mayúsculas.
+        assert_eq!(names, vec!["a.jpg", "b.jpg"]);
+        assert!(files.iter().all(|f| f.modified.is_some()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
