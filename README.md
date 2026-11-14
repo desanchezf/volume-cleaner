@@ -17,6 +17,7 @@ A Rust + egui GUI application to scan storage volumes, preview files, detect dup
   - ✏️ Custom: user-specified extensions (e.g., `psd, raw` or `.psd .raw`)
 - **Duplicate detection**: Files are first grouped by size, then by a partial hash of their first bytes, and only real candidates get a full SHA-256 hash — avoiding hashing every large file up front. The **original** is just the first occurrence found during the scan (depth-first, unsorted); the review GUI shows the duplicate flag, and the user marks keep or delete per row. A "Borrar duplicados" button then permanently deletes every duplicate currently marked for deletion, but only after a confirmation modal lists exactly which files will be removed and their combined size — nothing is deleted without that explicit confirmation.
 - **Tinder-like review**: Navigate matched files one at a time and mark for deletion or retention using the on-screen buttons or the `K` (keep) / `D` (delete) keyboard shortcuts. Each decision immediately advances to the next file.
+- **Review summary**: A "Summary" button in the Review files tab opens a modal listing every reviewed, non-duplicate file currently marked for deletion, with a running count and total size — a read-only checkpoint before any real cleanup step exists for that tab.
 - **Resumable review sessions**: Review decisions (`keep`/`delete`) and your position in the queue are persisted to disk per scanned folder, and the last folder/filter used is remembered too — so closing and reopening the app, then scanning the same folder again, resumes right where you left off. See [Review state persistence](#review-state-persistence).
 - **Preview capabilities**:
   - Images: full-resolution preview that scales with the window, plus size, modified date, and pixel dimensions.
@@ -67,7 +68,7 @@ volume-cleaner/
 
 ### Module Responsibilities
 
-- **`gui`**: Owns all `eframe::App` state and rendering — the header (folder picker, extension filter, scan button), the "Remove duplicates" table (sort by name/size, per-row keep/delete, byte counts), the "Review files" one-at-a-time screen (metadata, preview, centered keep/delete controls, keyboard shortcuts), the exit-confirmation modal, and the footer progress bar/status line. Runs the scan on a background thread and polls it via an `mpsc` channel so the UI stays responsive.
+- **`gui`**: Owns all `eframe::App` state and rendering — the header (folder picker, extension filter, scan button), the "Remove duplicates" table (sort by name/size, per-row keep/delete, byte counts, and a "Borrar duplicados" button that deletes every marked duplicate for real after a confirmation modal), the "Review files" one-at-a-time screen (metadata, responsive preview, centered keep/delete controls, keyboard shortcuts, and a Summary modal), the exit-confirmation modal, and the footer progress bar/status line. Runs the scan on a background thread and polls it via an `mpsc` channel so the UI stays responsive.
 - **`filesystem`**: Recursively walks a directory (`walkdir`), filters by extension, and produces `Entry` values (path, size, extension). Detects duplicates by grouping same-size files, discarding non-matches early via a partial hash of the first bytes, and only computing a full SHA-256 over files that still collide. Also owns home-relative path display and the on-disk persistence of review decisions and the last-used session (see below).
 - **`config`**: Defines the built-in extension presets and maps an extension to a `FileCategory` so the review screen can pick the right preview widget.
 - **`platform`**: Opens the OS file manager at a given path (`open -R` on macOS, `explorer /select,` on Windows, `xdg-open` on the parent directory on Linux).
@@ -78,8 +79,8 @@ volume-cleaner/
 2. **Configure filters**: Pick a preset (image/video/audio/documents) or "custom" with your own extensions, then click "Scan volume".
 3. **Scan and hash**: Files are listed recursively and duplicates are detected via partial-then-full hashing, with progress shown in the footer.
 4. **Review files**:
-   - **Remove duplicates** tab: byte-identical copies only, sortable by name or size, keep/delete per row.
-   - **Review files** tab: every scanned file, one at a time, with preview and metadata; press `K` to keep or `D` to delete (or click the buttons) to advance.
+   - **Remove duplicates** tab: byte-identical copies only, sortable by name or size, keep/delete per row. Once you're done marking, "Borrar duplicados" permanently deletes every duplicate marked for deletion — after a confirmation modal listing exactly which files and how much space.
+   - **Review files** tab: every scanned file, one at a time, with preview and metadata; press `K` to keep or `D` to delete (or click the buttons) to advance. The "Summary" button shows what's currently marked for deletion in this tab (excluding duplicates, which are handled separately).
    - Unsupported formats show "Reveal in file manager" instead of a preview.
 5. **Resume later**: Your keep/delete decisions and review position are saved automatically as you go — see below.
 
